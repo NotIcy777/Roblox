@@ -1,4 +1,4 @@
-﻿-- // LOAD LUNA INTERFACE SUITE
+-- // LOAD LUNA INTERFACE SUITE
 local Luna = loadstring(game:HttpGet("https://raw.githubusercontent.com/Nebula-Softworks/Luna-Interface-Suite/refs/heads/master/source.lua", true))()
 
 -- Create the main UI window
@@ -161,11 +161,85 @@ MovementTab:CreateButton({
 -- COSMIC TP
 ----------------------
 local CosmicLocations = {
-    Vector3.new(10500, 200, 4500),
-    Vector3.new(9800, 180, 5100),
-    Vector3.new(11200, 220, 4700),
-    Vector3.new(10250, 210, 4950),
+    -- Northern Expedition
+    Vector3.new(19608, 172, 5340),
+    Vector3.new(20312, 220, 5226),
+    Vector3.new(19287, 398, 6133),
+    Vector3.new(19611, 399, 5474),
+    Vector3.new(19256, 416, 5780),
+    Vector3.new(19896, 460, 4989),
+    Vector3.new(19616, 470, 6036),
+    Vector3.new(20142, 656, 5830),
+    Vector3.new(20326, 722, 5719),
+    Vector3.new(20057, 1045, 5755),
+    Vector3.new(19829, 1050, 5486),
+    Vector3.new(20007, 1138, 5379),
+
+    -- Snowcap Island
+    Vector3.new(2662, 171, 2540),
+    Vector3.new(3376, 132, 2877),
+    Vector3.new(2944, 151, 2469),
+
+    -- Ancient Isle
+    Vector3.new(6251, 145, 926),
+    Vector3.new(5689, 164, 687),
+    Vector3.new(6061, 203, 376),
+    Vector3.new(5469, 142, -332),
+    Vector3.new(5960, 262, 223),
+    Vector3.new(6127, 386, 597),
+    Vector3.new(5683, 184, -182),
+    Vector3.new(6157, 273, 347),
+
+    -- Moosewood
+    Vector3.new(614, 167, 221),
+    Vector3.new(447, 142, 306),
+
+    -- Forsaken Shores
+    Vector3.new(-2899, 231, 1275),
+    Vector3.new(-2674, 168, 1787),
+    Vector3.new(-2821, 272, 2544),
+    Vector3.new(-2694, 133, 1586),
+
+    -- Castaway Cliffs
+    Vector3.new(362, 203, -1817),
+    Vector3.new(449, 307, -2077),
+
+    -- Sunstone Island
+    Vector3.new(-852, 137, -1166),
+    Vector3.new(-1132, 222, -1084),
+
+    -- Statue of Sovereignty
+    Vector3.new(-131, 153, -1157),
+
+    -- Terrapin Island
+    Vector3.new(78, 217, 2082),
+    Vector3.new(-56, 154, 1961),
+
+    -- Grand Reef
+    Vector3.new(-3689, 143, 735),
+
+    -- Mushgrove Swamp
+    Vector3.new(2664, 134, -856),
+    Vector3.new(2542, 166, -1000),
+
+    -- Birch Cay
+    Vector3.new(1775, 142, -2481),
+
+    -- Earmark Island
+    Vector3.new(1218, 154, 455),
+
+    -- The Arch
+    Vector3.new(1008, 133, -1290),
+
+    -- Haddock Rock
+    Vector3.new(1899, 184, -1156),
+
+    -- Unnamed Rocks
+    Vector3.new(1897, 183, -1155),
+    Vector3.new(2145, 186, 898),
+    Vector3.new(-1572, 128, 2235),
 }
+
 
 AutoTP_Tab:CreateButton({
     Name = "Start Cosmic TP",
