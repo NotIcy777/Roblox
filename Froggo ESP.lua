@@ -1,4 +1,4 @@
-﻿--// ================= LOAD OBSIDIAN =================
+--// ================= LOAD OBSIDIAN =================
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/"
 local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
 
@@ -9,11 +9,354 @@ local UserInputService = game:GetService("UserInputService")
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
+-- new Box ESP (replaces old Boxes implementation)
+-- settings
+local settings = {
+   defaultcolor = Color3.fromRGB(255,0,0),
+   teamcheck = false,
+   teamcolor = true
+};
+
+-- services
+local runService = game:GetService("RunService");
+local players = game:GetService("Players");
+
+-- variables
+local localPlayer = players.LocalPlayer;
+local camera = workspace.CurrentCamera;
+
+-- functions
+local newVector2, newColor3, newDrawing = Vector2.new, Color3.new, Drawing.new;
+local tan, rad = math.tan, math.rad;
+local round = function(...) local a = {}; for i,v in next, table.pack(...) do a[i] = math.round(v); end return unpack(a); end;
+local wtvp = function(...) local a, b = camera.WorldToViewportPoint(camera, ...) return newVector2(a.X, a.Y), b, a.Z end;
+
+local espCache = {};
+local textESP = {} -- cache per player for text drawings
+
+local function createTextESP(player)
+    local texts = {}
+    local abyss = getgenv().Abyss or {}
+    local font = (typeof(abyss.Font) == "EnumItem" and abyss.Font) or Enum.Font.Code
+
+    -- Use Abyss theme colors (do not override with team colors)
+    local nameColor = abyss.NameColor or settings.defaultcolor
+    local healthColor = abyss.HealthColor or Color3.fromRGB(255, 255, 255)
+    local distanceColor = abyss.DistanceColor or settings.defaultcolor
+
+    texts.Name = Drawing.new("Text")
+    texts.Name.Text = player.Name
+    texts.Name.Size = 16
+    texts.Name.Color = nameColor
+    pcall(function() texts.Name.Font = font end)
+    texts.Name.Center = true
+    texts.Name.Outline = true
+    texts.Name.Visible = false
+
+    texts.Health = Drawing.new("Text")
+    texts.Health.Text = ""
+    texts.Health.Size = 16
+    texts.Health.Color = healthColor
+    pcall(function() texts.Health.Font = font end)
+    texts.Health.Center = true
+    texts.Health.Outline = true
+    texts.Health.Visible = false
+
+    texts.Distance = Drawing.new("Text")
+    texts.Distance.Text = ""
+    texts.Distance.Size = 16
+    texts.Distance.Color = distanceColor
+    pcall(function() texts.Distance.Font = font end)
+    texts.Distance.Center = true
+    texts.Distance.Outline = true
+    texts.Distance.Visible = false
+
+    textESP[player] = texts
+end
+
+local function removeTextESP(player)
+    if textESP[player] then
+        for _, t in pairs(textESP[player]) do
+            pcall(function() t:Remove() end)
+        end
+        textESP[player] = nil
+    end
+end
+local function createEsp(player)
+   local drawings = {};
+   
+   drawings.box = newDrawing("Square");
+   drawings.box.Thickness = 1;
+   drawings.box.Filled = false;
+   drawings.box.Color = settings.defaultcolor;
+   drawings.box.Visible = false;
+   drawings.box.ZIndex = 2;
+
+   drawings.boxoutline = newDrawing("Square");
+   drawings.boxoutline.Thickness = 3;
+   drawings.boxoutline.Filled = false;
+   drawings.boxoutline.Color = newColor3();
+   drawings.boxoutline.Visible = false;
+   drawings.boxoutline.ZIndex = 1;
+
+    -- left-side health bar (outline + fill)
+    drawings.healthBarOutline = newDrawing("Square")
+    drawings.healthBarOutline.Filled = false
+    drawings.healthBarOutline.Thickness = 1
+    drawings.healthBarOutline.Color = newColor3()
+    drawings.healthBarOutline.Visible = false
+    drawings.healthBarOutline.ZIndex = 0
+
+    drawings.healthBar = newDrawing("Square")
+    drawings.healthBar.Filled = true
+    drawings.healthBar.Thickness = 0
+    drawings.healthBar.Color = newColor3()
+    drawings.healthBar.Visible = false
+    drawings.healthBar.ZIndex = 3
+
+   espCache[player] = drawings;
+end
+
+local function removeEsp(player)
+   if rawget(espCache, player) then
+       for _, drawing in next, espCache[player] do
+           drawing:Remove();
+       end
+       espCache[player] = nil;
+   end
+end
+
+local function updateEsp(player, esp)
+   local character = player and player.Character
+   if character then
+       local cframe = character:GetModelCFrame()
+       local position, visible, depth = wtvp(cframe.Position)
+
+       -- prefer to only show ESP when both top and bottom of the character are on-screen
+       local head = character:FindFirstChild("Head")
+       local hrp = character:FindFirstChild("HumanoidRootPart")
+       local humanoid = character:FindFirstChildOfClass("Humanoid")
+       local topWorld = head and (head.Position + Vector3.new(0, 0.25, 0)) or (hrp and (hrp.Position + Vector3.new(0, (humanoid and humanoid.HipHeight or 2) + 1.5, 0)))
+       local bottomWorld = hrp and (hrp.Position - Vector3.new(0, math.max(0.5, (humanoid and humanoid.HipHeight or 1) * 0.9), 0)) or nil
+       local topVis, botVis = false, false
+       if topWorld then
+           local _p, _on = camera:WorldToViewportPoint(topWorld)
+           topVis = _on
+       end
+       if bottomWorld then
+           local _p2, _on2 = camera:WorldToViewportPoint(bottomWorld)
+           botVis = _on2
+       end
+
+       visible = visible and topVis and botVis
+       esp.box.Visible = visible
+       esp.boxoutline.Visible = visible
+
+       -- HARD hide health bar when target is not visible
+       if not visible then
+           -- fully remove health bar drawings to avoid stuck visuals; they will be recreated when visible again
+           if esp.healthBar then pcall(function() esp.healthBar.Visible = false esp.healthBar:Remove() end) end
+           if esp.healthBarOutline then pcall(function() esp.healthBarOutline.Visible = false esp.healthBarOutline:Remove() end) end
+           esp.healthBar = nil
+           esp.healthBarOutline = nil
+           return
+       end
+
+       if cframe and visible then
+           local scaleFactor = 1 / (depth * tan(rad(camera.FieldOfView / 2)) * 2) * 1000;
+           local width, height = round(4 * scaleFactor, 5 * scaleFactor);
+           local x, y = round(position.X, position.Y);
+
+           esp.box.Size = newVector2(width, height);
+           esp.box.Position = newVector2(round(x - width / 2, y - height / 2));
+            -- color applied from global picker elsewhere; don't override here
+
+           esp.boxoutline.Size = esp.box.Size;
+           esp.boxoutline.Position = esp.box.Position;
+           
+                   -- Health bar (left side)
+                   local humanoid = character:FindFirstChildOfClass("Humanoid")
+                   local hpRatio = 0
+                   if humanoid and humanoid.MaxHealth and humanoid.MaxHealth > 0 then
+                       hpRatio = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+                   end
+
+                   -- ensure health bar drawings exist (they may have been removed when off-screen)
+                   if not esp.healthBarOutline then
+                       pcall(function()
+                           esp.healthBarOutline = newDrawing("Square")
+                           esp.healthBarOutline.Filled = false
+                           esp.healthBarOutline.Thickness = 1
+                           esp.healthBarOutline.Color = newColor3()
+                           esp.healthBarOutline.Visible = false
+                           esp.healthBarOutline.ZIndex = 0
+                       end)
+                   end
+                   if not esp.healthBar then
+                       pcall(function()
+                           esp.healthBar = newDrawing("Square")
+                           esp.healthBar.Filled = true
+                           esp.healthBar.Thickness = 0
+                           esp.healthBar.Color = newColor3()
+                           esp.healthBar.Visible = false
+                           esp.healthBar.ZIndex = 3
+                       end)
+                   end
+
+                   if esp.healthBarOutline and esp.healthBar then
+                       local barWidth = math.max(3, math.floor(width * 0.12))
+                       local barX = esp.box.Position.X - barWidth - 4
+                       local barY = esp.box.Position.Y
+                       esp.healthBarOutline.Size = newVector2(barWidth, esp.box.Size.Y)
+                       esp.healthBarOutline.Position = newVector2(barX, barY)
+                       esp.healthBarOutline.Visible = visible and getgenv().Abyss.HealthESP and getgenv().Abyss.Enabled
+
+                       local fillHeight = math.max(1, math.floor(esp.box.Size.Y * hpRatio))
+                       esp.healthBar.Size = newVector2(math.max(1, barWidth - 2), fillHeight)
+                       esp.healthBar.Position = newVector2(barX + 1, barY + (esp.box.Size.Y - fillHeight))
+                       esp.healthBar.Color = getgenv().Abyss.HealthColor or Color3.fromRGB(255, 255, 255)
+                       esp.healthBar.Visible = visible and getgenv().Abyss.HealthESP and getgenv().Abyss.Enabled
+                   end
+       end
+   else
+       esp.box.Visible = false;
+       esp.boxoutline.Visible = false;
+       if esp.healthBar then pcall(function() esp.healthBar.Visible = false end) end
+       if esp.healthBarOutline then pcall(function() esp.healthBarOutline.Visible = false end) end
+   end
+end
+
+-- main
+-- Ensure ESP defaults are defined BEFORE creating drawings
+getgenv().Abyss = {
+    Enabled = false,        -- Box ESP OFF by default
+    NameESP = false,        -- Name ESP OFF
+    HealthESP = false,      -- Health ESP OFF (renders as side bar when enabled)
+    DistanceESP = false,    -- Distance ESP OFF
+    TeamCheck = false,      -- Do not hide teammates by default
+    FOVLock = false,        -- Do not force camera FOV by default
+
+    NameColor = Color3.fromRGB(55, 105, 255),
+    HealthColor = Color3.fromRGB(255, 255, 255),
+    DistanceColor = Color3.fromRGB(30, 60, 200),
+    Font = Enum.Font.Code,
+
+    Color = Color3.fromRGB(55, 105, 255)
+}
+
+for _, player in next, players:GetPlayers() do
+    if player ~= localPlayer then
+         createEsp(player);
+         pcall(function() createTextESP(player) end)
+    end
+end
+
+players.PlayerAdded:Connect(function(player)
+    createEsp(player);
+    pcall(function() createTextESP(player) end)
+end);
+
+players.PlayerRemoving:Connect(function(player)
+    removeEsp(player);
+    removeTextESP(player);
+end)
+
+runService:BindToRenderStep("esp", Enum.RenderPriority.Camera.Value, function()
+   for player, drawings in next, espCache do
+        -- skip local player
+        if player == LocalPlayer then continue end
+        -- optional team check (hide teammates when enabled)
+        if getgenv().Abyss.TeamCheck and LocalPlayer.Team and player.Team == LocalPlayer.Team then
+            if drawings then
+                pcall(function()
+                    drawings.box.Visible = false
+                    drawings.boxoutline.Visible = false
+                    if drawings.healthBar then drawings.healthBar.Visible = false end
+                    if drawings.healthBarOutline then drawings.healthBarOutline.Visible = false end
+                end)
+            end
+            if textESP[player] then
+                pcall(function() for _, t in pairs(textESP[player]) do t.Visible = false end end)
+            end
+            continue
+        end
+
+       if drawings and player ~= localPlayer then
+           if getgenv().Abyss.Enabled then
+               updateEsp(player, drawings)
+               -- always apply color picker value regardless of teamcolor
+               drawings.box.Color = getgenv().Abyss.Color
+           else
+               pcall(function()
+                   drawings.box.Visible = false
+                   drawings.boxoutline.Visible = false
+                   if drawings.healthBar then drawings.healthBar.Visible = false end
+                   if drawings.healthBarOutline then drawings.healthBarOutline.Visible = false end
+               end)
+           end
+           -- update text ESP (name/health/distance)
+           pcall(function()
+               if player ~= LocalPlayer then
+                   if textESP[player] == nil then pcall(function() createTextESP(player) end) end
+                   if textESP[player] then
+                       local function updateTextESP()
+                           local char = player.Character
+                           if not char then return end
+                           local hrp = char:FindFirstChild("HumanoidRootPart")
+                           local humanoid = char:FindFirstChildOfClass("Humanoid")
+                           if not hrp or not humanoid then
+                               for _, t in pairs(textESP[player]) do t.Visible = false end
+                               return
+                           end
+
+                           local screenPos, onScreen = Camera:WorldToViewportPoint(hrp.Position + Vector3.new(0, 3, 0))
+                           if not onScreen then
+                               for _, t in pairs(textESP[player]) do t.Visible = false end
+                               return
+                           end
+
+                           local x, y = screenPos.X, screenPos.Y
+
+                           -- Name ESP
+                           if getgenv().Abyss.NameESP then
+                               textESP[player].Name.Text = player.Name
+                               textESP[player].Name.Position = Vector2.new(x, y - 20)
+                               textESP[player].Name.Color = getgenv().Abyss.NameColor or settings.defaultcolor
+                               textESP[player].Name.Visible = true
+                           else
+                               textESP[player].Name.Visible = false
+                           end
+
+                           -- Health ESP (rendered as side bar; do not show health text)
+                           textESP[player].Health.Visible = false
+
+                           -- Distance ESP
+                           if getgenv().Abyss.DistanceESP then
+                               local dist = 0
+                               if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                                   dist = math.floor((hrp.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude)
+                               end
+                               textESP[player].Distance.Text = dist .. " studs"
+                               textESP[player].Distance.Position = Vector2.new(x, y + 20)
+                               textESP[player].Distance.Color = getgenv().Abyss.DistanceColor or settings.defaultcolor
+                               textESP[player].Distance.Visible = true
+                           else
+                               textESP[player].Distance.Visible = false
+                           end
+                       end
+                       updateTextESP()
+                   end
+               end
+           end)
+       end
+   end
+end)
+
 --// ================= AIMBOT STATE =================
-getgenv().FroggoAimbot = {
+getgenv().AbyssAimbot = {
     Enabled = false,
     ShowFOV = false,
-    FOVColor = Color3.fromRGB(0, 255, 10),
+    FOVColor = Color3.fromRGB(55, 105, 255),
     HoldToAim = true,
     TargetPart = "Head", -- Head / HumanoidRootPart / Feet
     FOV = 120,          -- optional FOV limit
@@ -24,27 +367,21 @@ getgenv().FroggoAimbot = {
     AimDelay = 0, -- seconds
     UseAimDelay = false,
     WallCheck = false,
+    TeamCheck = true, -- exclude teammates by default
     LegitMode = false
 }
 
 -- hard vertical cutoff for aimbot (studs allowed below you)
 local MAX_VERTICAL_DROP = 2.5
+local DEFAULT_FOV = 70 -- typical Roblox default FOV used for scaling FOV circle
 
---// ================= ESP STATE =================
-getgenv().FroggoESP = {
-    Enabled = false,
-    Color = Color3.fromRGB(0, 255, 10),
-    Skeleton = false,
-    SkeletonColor = Color3.fromRGB(255, 255, 255)
-}
+-- ESP state is defined earlier above player creation; avoid reassigning here.
 
 --// ================= VARIABLES =================
-local Boxes = {}
-local Skeletons = {}
 -- head-circle feature removed
 local Connections = {}
 local RUNNING = true
-local BOX_THICKNESS = 1
+-- BOX_THICKNESS removed (new ESP uses its own thickness)
 local HoldingRMB = false
 local LockedAimbot = nil
 local LastTargetPos = nil
@@ -60,18 +397,27 @@ getgenv().Spinbot = getgenv().Spinbot or {
 local ESP_THROTTLE = 2
 local espFrameCounter = 0
 
+-- Full Bright Variables
+local FullBrightEnabled = false
+local OriginalLighting = {}
+
+
 -- ================= FOV CIRCLE =================
 local FOVCircle = Drawing.new("Circle")
 FOVCircle.Visible = false
 FOVCircle.Filled = false
 FOVCircle.Thickness = 1
 FOVCircle.NumSides = 64
-FOVCircle.Color = getgenv().FroggoAimbot.FOVColor
+FOVCircle.Color = getgenv().AbyssAimbot.FOVColor
 
 --// ================= WHITELIST =================
 local function IsWhitelisted(player)
     if player == LocalPlayer then return true end
-    if LocalPlayer.Team and player.Team == LocalPlayer.Team then return true end
+    -- respect aimbot team check setting: when enabled, treat teammates as whitelisted
+    local aimbot = getgenv().AbyssAimbot or {}
+    if aimbot.TeamCheck then
+        if LocalPlayer.Team and player.Team == LocalPlayer.Team then return true end
+    end
     return false
 end
 
@@ -81,11 +427,11 @@ local function GetAimPosition(player)
     if not char then return nil end
 
     local part
-    if getgenv().FroggoAimbot.TargetPart == "Head" then
+    if getgenv().AbyssAimbot.TargetPart == "Head" then
         part = char:FindFirstChild("Head")
-    elseif getgenv().FroggoAimbot.TargetPart == "Body" then
+    elseif getgenv().AbyssAimbot.TargetPart == "Body" then
         part = char:FindFirstChild("HumanoidRootPart")
-    elseif getgenv().FroggoAimbot.TargetPart == "Feet" then
+    elseif getgenv().AbyssAimbot.TargetPart == "Feet" then
         local hrp = char:FindFirstChild("HumanoidRootPart")
         if hrp then part = {Position = hrp.Position - Vector3.new(0, hrp.Size.Y/2, 0)} end
     end
@@ -109,14 +455,17 @@ end
 
 Connections.Aimbot = RunService.RenderStepped:Connect(function()
     -- FOV CIRCLE UPDATE
-    if getgenv().FroggoAimbot.ShowFOV then
-        -- keep FOV circle fixed to screen center to avoid jitter
-        local fx = Camera.ViewportSize.X / 2
-        local fy = Camera.ViewportSize.Y / 2
+    if getgenv().AbyssAimbot.ShowFOV then
+        local viewport = Camera.ViewportSize
+        local fx, fy = viewport.X / 2, viewport.Y / 2
         FOVCircle.Visible = true
         FOVCircle.Position = Vector2.new(fx, fy)
-        FOVCircle.Radius = getgenv().FroggoAimbot.FOV
-        FOVCircle.Color = getgenv().FroggoAimbot.FOVColor
+
+        -- Dynamically scale FOV circle based on current camera FOV
+        local camFOV = Camera.FieldOfView
+        local fovScale = camFOV / DEFAULT_FOV
+        FOVCircle.Radius = getgenv().AbyssAimbot.FOV * fovScale
+        FOVCircle.Color = getgenv().AbyssAimbot.FOVColor
     else
         FOVCircle.Visible = false
     end
@@ -124,7 +473,7 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
     -- sample RMB state each frame to avoid missed/late events
     HoldingRMB = UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
 
-    if not getgenv().FroggoAimbot.Enabled then
+    if not getgenv().AbyssAimbot.Enabled then
         LockedAimbot = nil
         LastTargetPos = nil
         return
@@ -139,13 +488,13 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
     end
 
     local targetPos = nil
-    local fovLimit = getgenv().FroggoAimbot.FOV
+    local fovLimit = getgenv().AbyssAimbot.FOV
     local fovLimit2 = fovLimit * fovLimit
     local centerX = Camera.ViewportSize.X * 0.5
     local centerY = Camera.ViewportSize.Y * 0.5
 
     -- Hold-to-aim locking behavior: if HoldToAim is enabled, only acquire target while holding RMB, and do not switch
-    if getgenv().FroggoAimbot.HoldToAim then
+    if getgenv().AbyssAimbot.HoldToAim then
         if not HoldingRMB then
             LockedAimbot = nil
             LastTargetPos = nil
@@ -167,13 +516,22 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
                 return
             end
 
-            -- HARD vertical drop check (respawn / void / fall)
-            local yDiff = aimP.Y - lpHRP.Position.Y
-            if yDiff < -MAX_VERTICAL_DROP then
-                LockedAimbot = nil
-                LastTargetPos = nil
-                return
+            -- HARD wall check while locked
+            if getgenv().AbyssAimbot.WallCheck then
+                if not IsVisible(aimP, LockedAimbot.Character) then
+                    LockedAimbot = nil
+                    LastTargetPos = nil
+                    return
+                end
             end
+
+            -- HARD vertical drop check (respawn / void / fall) -- DISABLED
+            -- local yDiff = aimP.Y - lpHRP.Position.Y
+            -- if yDiff < -MAX_VERTICAL_DROP then
+            --     LockedAimbot = nil
+            --     LastTargetPos = nil
+            --     return
+            -- end
 
             -- screen + FOV validation
             local sp, onScreen = Camera:WorldToViewportPoint(aimP)
@@ -185,8 +543,8 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
 
             local dx = sp.X - centerX
             local dy = sp.Y - centerY
-            local useStick = getgenv().FroggoAimbot.LegitMode or getgenv().FroggoAimbot.UseStickiness
-            local stick = useStick and getgenv().FroggoAimbot.LockStickiness or 1
+            local useStick = getgenv().AbyssAimbot.LegitMode or getgenv().AbyssAimbot.UseStickiness
+            local stick = useStick and getgenv().AbyssAimbot.LockStickiness or 1
             if (dx*dx + dy*dy) > (fovLimit2 / stick) then
                 LockedAimbot = nil
                 LastTargetPos = nil
@@ -218,19 +576,19 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
                 -- max distance check
                 local lpChar = LocalPlayer.Character
                 local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
-                if lpHRP and (aimP - lpHRP.Position).Magnitude > getgenv().FroggoAimbot.MaxDistance then
+                if lpHRP and (aimP - lpHRP.Position).Magnitude > getgenv().AbyssAimbot.MaxDistance then
                     continue
                 end
                 -- wall/visibility check
-                if getgenv().FroggoAimbot.WallCheck and not IsVisible(aimP, player.Character) then
+                if getgenv().AbyssAimbot.WallCheck and not IsVisible(aimP, player.Character) then
                     continue
                 end
-                -- vertical cutoff
-                local lpChar = LocalPlayer.Character
-                local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
-                if lpHRP and (aimP.Y - lpHRP.Position.Y) < -MAX_VERTICAL_DROP then
-                    continue
-                end
+                -- vertical cutoff -- DISABLED
+                -- local lpChar = LocalPlayer.Character
+                -- local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
+                -- if lpHRP and (aimP.Y - lpHRP.Position.Y) < -MAX_VERTICAL_DROP then
+                --     continue
+                -- end
                 local screenPos, onScreen = Camera:WorldToViewportPoint(aimP)
                 if not onScreen then continue end
                 -- front-only check
@@ -238,7 +596,7 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
                 if dir.Magnitude == 0 then continue end
                 dir = dir.Unit
                 if Camera.CFrame.LookVector:Dot(dir) < 0 then
-                    if getgenv().FroggoAimbot.Debug then
+                    if getgenv().AbyssAimbot.Debug then
                         print(player.Name, "front-dot:", Camera.CFrame.LookVector:Dot(dir))
                     end
                     continue
@@ -255,9 +613,9 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
             if bestPlayer then
                 -- ensure previous lock does not prevent acquiring this fresh target
                 LockedAimbot = nil
-                local useDelay = getgenv().FroggoAimbot.LegitMode or getgenv().FroggoAimbot.UseAimDelay
+                local useDelay = getgenv().AbyssAimbot.LegitMode or getgenv().AbyssAimbot.UseAimDelay
                 if useDelay then
-                    if os.clock() - LastAimTime < getgenv().FroggoAimbot.AimDelay then
+                    if os.clock() - LastAimTime < getgenv().AbyssAimbot.AimDelay then
                         return
                     end
                     LastAimTime = os.clock()
@@ -278,19 +636,19 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
             -- max distance check
             local lpChar = LocalPlayer.Character
             local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
-            if lpHRP and (aimPos - lpHRP.Position).Magnitude > getgenv().FroggoAimbot.MaxDistance then
+            if lpHRP and (aimPos - lpHRP.Position).Magnitude > getgenv().AbyssAimbot.MaxDistance then
                 continue
             end
             -- wall/visibility check
-            if getgenv().FroggoAimbot.WallCheck and not IsVisible(aimPos, player.Character) then
+            if getgenv().AbyssAimbot.WallCheck and not IsVisible(aimPos, player.Character) then
                 continue
             end
-            -- vertical cutoff
-            local lpChar = LocalPlayer.Character
-            local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
-            if lpHRP and (aimPos.Y - lpHRP.Position.Y) < -MAX_VERTICAL_DROP then
-                continue
-            end
+                -- vertical cutoff -- DISABLED
+                -- local lpChar = LocalPlayer.Character
+                -- local lpHRP = lpChar and lpChar:FindFirstChild("HumanoidRootPart")
+                -- if lpHRP and (aimPos.Y - lpHRP.Position.Y) < -MAX_VERTICAL_DROP then
+                --     continue
+                -- end
             local screenPos, onScreen = Camera:WorldToViewportPoint(aimPos)
             if not onScreen then continue end
             -- front-only check
@@ -298,7 +656,7 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
             if dir.Magnitude == 0 then continue end
             dir = dir.Unit
             if Camera.CFrame.LookVector:Dot(dir) < 0 then
-                if getgenv().FroggoAimbot.Debug then
+                if getgenv().AbyssAimbot.Debug then
                     print(player.Name, "front-dot:", Camera.CFrame.LookVector:Dot(dir))
                 end
                 continue
@@ -330,216 +688,37 @@ Connections.Aimbot = RunService.RenderStepped:Connect(function()
     if targetPos then
         local camCFrame = Camera.CFrame
         local newCFrame = CFrame.new(camCFrame.Position, targetPos)
-        -- Smooth rotation: Smoothness is 1..5 (min 1). Map to lerp alpha (closer to 0 = slower)
-        local s = math.clamp(getgenv().FroggoAimbot.Smoothness or 1, 1, 5)
-        local alpha = math.clamp(1 - (s / 5), 0, 1)
+        local s = math.clamp(getgenv().AbyssAimbot.Smoothness or 1, 1, 5)
+
+        -- Smoothness behavior:
+        -- 1 = instant
+        -- 5 = very smooth
+        local alpha
+        if s == 1 then
+            alpha = 1
+        else
+            alpha = 1 / (s * 6) -- legit smooth curve
+        end
+
         Camera.CFrame = camCFrame:Lerp(newCFrame, alpha)
     end
 end)
 
 --// ================= BOX FUNCTIONS =================
-local function CreateBox(player)
-    if Boxes[player] then return end
-    local box = Drawing.new("Square")
-    box.Filled = false
-    box.Thickness = BOX_THICKNESS
-    box.Visible = false
-    Boxes[player] = box
-end
 
-local function RemoveBox(player)
-    local box = Boxes[player]
-    if box then
-        box:Remove()
-        Boxes[player] = nil
-    end
-end
-
-local function CreateSkeleton(player)
-    if Skeletons[player] then return end
-    local lines = {}
-    -- list of bone segments (pairs). endpoints are names or list of fallback names
-    local bones = {
-        { {"Head"}, {"UpperTorso", "Torso"} },
-        { {"UpperTorso", "Torso"}, {"LowerTorso", "Torso"} },
-        { {"UpperTorso", "Torso"}, {"LeftUpperArm" , "Left Arm", "LeftArm"} },
-        { {"LeftUpperArm" , "Left Arm", "LeftArm"}, {"LeftLowerArm", "Left Forearm", "LeftForearm"} },
-        { {"LeftLowerArm", "Left Forearm", "LeftForearm"}, {"LeftHand", "Left Hand"} },
-        { {"UpperTorso", "Torso"}, {"RightUpperArm", "Right Arm", "RightArm"} },
-        { {"RightUpperArm", "Right Arm", "RightArm"}, {"RightLowerArm", "Right Forearm", "RightForearm"} },
-        { {"RightLowerArm", "Right Forearm", "RightForearm"}, {"RightHand", "Right Hand"} },
-        { {"LowerTorso", "Torso"}, {"LeftUpperLeg", "Left Leg", "LeftUpperLeg"} },
-        { {"LeftUpperLeg", "Left Leg", "LeftUpperLeg"}, {"LeftLowerLeg", "Left Leg 2", "LeftLowerLeg"} },
-        { {"LeftLowerLeg", "Left Leg 2", "LeftLowerLeg"}, {"LeftFoot", "Left Foot"} },
-        { {"LowerTorso", "Torso"}, {"RightUpperLeg", "Right Leg", "RightUpperLeg"} },
-        { {"RightUpperLeg", "Right Leg", "RightUpperLeg"}, {"RightLowerLeg", "Right Leg 2", "RightLowerLeg"} },
-        { {"RightLowerLeg", "Right Leg 2", "RightLowerLeg"}, {"RightFoot", "Right Foot"} }
-    }
-    for i = 1, #bones do
-        local l = Drawing.new("Line")
-        l.Visible = false
-        l.Thickness = 1
-        l.Color = getgenv().FroggoESP.SkeletonColor
-        table.insert(lines, l)
-    end
-    Skeletons[player] = {lines = lines, bones = bones}
-end
-
-local function RemoveSkeleton(player)
-    local sk = Skeletons[player]
-    if sk then
-        for _, l in ipairs(sk.lines) do
-            pcall(function() l:Remove() end)
-        end
-        Skeletons[player] = nil
-    end
-end
 
 -- head-circle feature removed
 
---// ================= ESP RENDER LOOP =================
-Connections.ESP = RunService.RenderStepped:Connect(function()
-    if not RUNNING then return end
-
-    espFrameCounter = espFrameCounter + 1
-    if (espFrameCounter % ESP_THROTTLE) ~= 0 then return end
-
-    -- cleanup leftover drawings for players who've left
-    local _currentPlayers = Players:GetPlayers()
-    local _playerSet = {}
-    for _, _p in ipairs(_currentPlayers) do _playerSet[_p] = true end
-    for p, _ in pairs(Skeletons) do
-        if not _playerSet[p] then
-            RemoveSkeleton(p)
-        end
-    end
-    for p, _ in pairs(Boxes) do
-        if not _playerSet[p] then
-            RemoveBox(p)
-        end
-    end
-
-    for _, player in ipairs(_currentPlayers) do
-        if IsWhitelisted(player) then
-            RemoveBox(player)
-            RemoveSkeleton(player)
-            continue
-        end
-
-        local char = player.Character
-        local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-
-        -- if HRP isn't on screen, remove visuals and skip this player
-        if hrp then
-            local hrp2D, hrpOnScreen = Camera:WorldToViewportPoint(hrp.Position)
-            if not hrpOnScreen then
-                RemoveSkeleton(player)
-                RemoveBox(player)
-                continue
-            end
-        end
-
-        if not char or not hrp or not humanoid then
-            RemoveBox(player)
-            RemoveSkeleton(player)
-            continue
-        end
-
-        -- Stable top/bottom calculation: prefer using the Head part when present
-        local head = char:FindFirstChild("Head")
-        local topWorld = head and (head.Position + Vector3.new(0, 0.25, 0)) or (hrp.Position + Vector3.new(0, humanoid.HipHeight + 1.5, 0))
-        local bottomWorld = hrp.Position - Vector3.new(0, math.max(0.5, humanoid.HipHeight * 0.9), 0)
-
-        local top2D, topVis = Camera:WorldToViewportPoint(topWorld)
-        local bot2D, botVis = Camera:WorldToViewportPoint(bottomWorld)
-
-        if not (topVis and botVis) then
-            RemoveBox(player)
-            RemoveSkeleton(player)
-            continue
-        end
-
-        -- BOX drawing (independent toggle)
-        if getgenv().FroggoESP.Enabled then
-            if not Boxes[player] then CreateBox(player) end
-            local box = Boxes[player]
-            local height = math.abs(top2D.Y - bot2D.Y)
-            local width = height / 2
-            local centerX = top2D.X
-            local centerY = (top2D.Y + bot2D.Y) / 2
-            box.Size = Vector2.new(width, height)
-            box.Position = Vector2.new(centerX - width / 2, centerY - height / 2)
-            box.Color = getgenv().FroggoESP.Color
-            box.Visible = true
-        else
-            RemoveBox(player)
-        end
-
-        -- SKELETON drawing (independent toggle)
-        if getgenv().FroggoESP.Skeleton then
-            if not Skeletons[player] then CreateSkeleton(player) end
-            local sk = Skeletons[player]
-            local function getPartPos(names)
-                for _, n in ipairs(names) do
-                    local p = char:FindFirstChild(n)
-                    if p then return p.Position end
-                end
-                return nil
-            end
-            for i, pair in ipairs(sk.bones) do
-                local aNames = pair[1]
-                local bNames = pair[2]
-                local aPos = getPartPos(aNames)
-                local bPos = getPartPos(bNames)
-                local line = sk.lines[i]
-                -- reset line every frame to avoid Drawing API sticking
-                pcall(function()
-                    line.From = Vector2.new(0, 0)
-                    line.To = Vector2.new(0, 0)
-                    line.Visible = false
-                end)
-
-                if not (aPos and bPos) then
-                    continue
-                end
-
-                local a2, aVis = Camera:WorldToViewportPoint(aPos)
-                local b2, bVis = Camera:WorldToViewportPoint(bPos)
-
-                -- strict: if either endpoint is offscreen, skip drawing
-                if not (aVis and bVis) then
-                    continue
-                end
-
-                line.From = Vector2.new(a2.X, a2.Y)
-                line.To = Vector2.new(b2.X, b2.Y)
-                line.Color = getgenv().FroggoESP.SkeletonColor
-                line.Visible = true
-            end
-        else
-            RemoveSkeleton(player)
-        end
-
-        -- head-circle feature removed
-    end
-end)
+-- Legacy per-frame ESP cleanup loop removed; `runService:BindToRenderStep("esp", ...)` controls ESP visibility now.
 
 --// ================= PLAYER JOIN / LEAVE =================
-Connections.Join = Players.PlayerAdded:Connect(function(player)
-    if not IsWhitelisted(player) then
-        CreateBox(player)
-    end
-end)
+-- PlayerAdded handling for boxes removed (new ESP creates cache on PlayerAdded)
 
-Connections.Leave = Players.PlayerRemoving:Connect(function(player)
-    RemoveBox(player)
-    RemoveSkeleton(player)
-end)
+-- PlayerRemoving handler: no skeleton cleanup needed
 
 --// ================= UI & TABS =================
 local Window = Library:CreateWindow({
-    Title = "🐸 Froggo ESP",
+    Title = "Abyss",
     Center = true,
     AutoShow = true
 })
@@ -553,7 +732,7 @@ AimGroup:AddToggle("AimBotToggle", {
     Text = "Enable Aimbot",
     Default = false,
     Callback = function(state)
-        getgenv().FroggoAimbot.Enabled = state
+        getgenv().AbyssAimbot.Enabled = state
     end
 })
 
@@ -564,7 +743,7 @@ AimGroup:AddDropdown("AimTargetPart", {
     Multi = false,
     Text = "Aim Part",
     Callback = function(selected)
-        getgenv().FroggoAimbot.TargetPart = selected
+        getgenv().AbyssAimbot.TargetPart = selected
     end
 })
 
@@ -573,10 +752,10 @@ AimGroup:AddSlider("AimSmooth", {
     Text = "Smoothness",
     Min = 1,
     Max = 5,
-    Default = getgenv().FroggoAimbot.Smoothness,
+    Default = getgenv().AbyssAimbot.Smoothness,
     Increment = 1,
     Callback = function(value)
-        getgenv().FroggoAimbot.Smoothness = math.max(1, math.floor(value))
+        getgenv().AbyssAimbot.Smoothness = math.max(1, math.floor(value))
     end
 })
 
@@ -585,10 +764,10 @@ AimGroup:AddSlider("AimFOV", {
     Text = "Max FOV (screen distance)",
     Min = 10,
     Max = 300,
-    Default = getgenv().FroggoAimbot.FOV,
+    Default = getgenv().AbyssAimbot.FOV,
     Increment = 1,
     Callback = function(value)
-        getgenv().FroggoAimbot.FOV = value
+        getgenv().AbyssAimbot.FOV = value
     end
 })
 
@@ -596,25 +775,25 @@ local FOVToggle = AimGroup:AddToggle("ShowFOVCircle", {
     Text = "Show FOV Circle",
     Default = false,
     Callback = function(state)
-        getgenv().FroggoAimbot.ShowFOV = state
+        getgenv().AbyssAimbot.ShowFOV = state
     end
 })
 
 FOVToggle:AddColorPicker("FOVCircleColor", {
     Title = "FOV Circle Color",
-    Default = getgenv().FroggoAimbot.FOVColor,
+    Default = getgenv().AbyssAimbot.FOVColor,
     Transparency = 0,
     Callback = function(color)
-        getgenv().FroggoAimbot.FOVColor = color
+        getgenv().AbyssAimbot.FOVColor = color
     end
 })
 
 -- Hold-to-aim toggle (keeps behavior on by default)
 AimGroup:AddToggle("HoldToAim", {
     Text = "Hold RMB to Aim",
-    Default = getgenv().FroggoAimbot.HoldToAim,
+    Default = getgenv().AbyssAimbot.HoldToAim,
     Callback = function(state)
-        getgenv().FroggoAimbot.HoldToAim = state
+        getgenv().AbyssAimbot.HoldToAim = state
     end
 })
 
@@ -623,10 +802,10 @@ AimGroup:AddSlider("AimDistance", {
     Text = "Max Aim Distance",
     Min = 50,
     Max = 1000,
-    Default = getgenv().FroggoAimbot.MaxDistance,
+    Default = getgenv().AbyssAimbot.MaxDistance,
     Increment = 10,
     Callback = function(v)
-        getgenv().FroggoAimbot.MaxDistance = v
+        getgenv().AbyssAimbot.MaxDistance = v
     end
 })
 
@@ -635,11 +814,11 @@ AimGroup:AddSlider("AimStick", {
     Text = "Lock Stickiness",
     -- use integer percentage (50..95) to avoid decimal slider bugs
     Min = 50,
-    Max = 95,
-    Default = math.floor((getgenv().FroggoAimbot.LockStickiness or 0.85) * 100),
+    Max = 100,
+    Default = math.floor((getgenv().AbyssAimbot.LockStickiness or 0.85) * 100),
     Increment = 1,
     Callback = function(v)
-        getgenv().FroggoAimbot.LockStickiness = (v or 50) / 100
+        getgenv().AbyssAimbot.LockStickiness = (v or 50) / 100
     end
 })
 
@@ -649,46 +828,55 @@ AimGroup:AddSlider("AimDelay", {
     Text = "Aim Delay (ms)",
     Min = 0,
     Max = 500,
-    Default = math.floor((getgenv().FroggoAimbot.AimDelay or 0) * 1000),
+    Default = math.floor((getgenv().AbyssAimbot.AimDelay or 0) * 1000),
     Increment = 1,
     Callback = function(v)
-        getgenv().FroggoAimbot.AimDelay = (v or 0) / 1000
+        getgenv().AbyssAimbot.AimDelay = (v or 0) / 1000
     end
 })
 
 -- Wall check toggle
 AimGroup:AddToggle("WallCheck", {
     Text = "Visibility Check",
-    Default = getgenv().FroggoAimbot.WallCheck,
+    Default = getgenv().AbyssAimbot.WallCheck,
     Callback = function(v)
-        getgenv().FroggoAimbot.WallCheck = v
+        getgenv().AbyssAimbot.WallCheck = v
+    end
+})
+
+-- Aimbot Team Check toggle (exclude teammates)
+AimGroup:AddToggle("AimbotTeamCheck", {
+    Text = "Team Check",
+    Default = getgenv().AbyssAimbot.TeamCheck,
+    Callback = function(state)
+        getgenv().AbyssAimbot.TeamCheck = state
     end
 })
 
 -- Use stickiness toggle
 AimGroup:AddToggle("UseStickiness", {
     Text = "Sticky Lock",
-    Default = getgenv().FroggoAimbot.UseStickiness,
+    Default = getgenv().AbyssAimbot.UseStickiness,
     Callback = function(v)
-        getgenv().FroggoAimbot.UseStickiness = v
+        getgenv().AbyssAimbot.UseStickiness = v
     end
 })
 
 -- Use aim delay toggle
 AimGroup:AddToggle("UseAimDelay", {
     Text = "Aim Delay",
-    Default = getgenv().FroggoAimbot.UseAimDelay,
+    Default = getgenv().AbyssAimbot.UseAimDelay,
     Callback = function(v)
-        getgenv().FroggoAimbot.UseAimDelay = v
+        getgenv().AbyssAimbot.UseAimDelay = v
     end
 })
 
 -- Legit/master mode toggle
 AimGroup:AddToggle("LegitMode", {
     Text = "Legit Mode (master)",
-    Default = getgenv().FroggoAimbot.LegitMode,
+    Default = getgenv().AbyssAimbot.LegitMode,
     Callback = function(v)
-        getgenv().FroggoAimbot.LegitMode = v
+        getgenv().AbyssAimbot.LegitMode = v
     end
 })
 
@@ -800,6 +988,75 @@ local SpinbotSpeed = MiscGroup:AddSlider("SpinbotSpeed", {
     end
 })
 
+-- Camera FOV slider in Misc tab
+local CameraFOVSlider = MiscGroup:AddSlider("CameraFOV", {
+    Text = "Camera FOV",
+    Min = 60,
+    Max = 120,
+    Default = workspace.CurrentCamera.FieldOfView,
+    Increment = 1,
+    Callback = function(value)
+        -- only apply the slider value to the actual Camera when the FOV lock is enabled
+        if getgenv().Abyss and getgenv().Abyss.FOVLock then
+            pcall(function()
+                workspace.CurrentCamera.FieldOfView = value
+            end)
+        end
+    end
+})
+
+-- Toggle to lock/unlock camera FOV enforcement
+MiscGroup:AddToggle("LockCameraFOV", {
+    Text = "Lock Camera FOV",
+    Default = getgenv().Abyss.FOVLock,
+    Callback = function(state)
+        getgenv().Abyss.FOVLock = state
+        -- when enabling the lock, immediately apply the slider's value to the camera
+        if state then
+            pcall(function()
+                workspace.CurrentCamera.FieldOfView = CameraFOVSlider.Value
+            end)
+        end
+    end
+})
+
+
+    MiscGroup:AddToggle("FullBright", {
+        Text = "Full Bright",
+        Default = false,
+        Callback = function(state)
+            local Lighting = game:GetService("Lighting")
+            if state then
+                -- Store original lighting values
+                OriginalLighting.Brightness = Lighting.Brightness
+                OriginalLighting.ClockTime = Lighting.ClockTime
+                OriginalLighting.Ambient = Lighting.Ambient
+                OriginalLighting.OutdoorAmbient = Lighting.OutdoorAmbient
+                OriginalLighting.FogEnd = Lighting.FogEnd
+
+                -- Apply full bright settings
+                Lighting.Brightness = 2
+                Lighting.ClockTime = 14 -- midday
+                Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+                Lighting.OutdoorAmbient = Color3.fromRGB(255, 255, 255)
+                Lighting.FogEnd = 100000 -- effectively no fog
+
+                FullBrightEnabled = true
+            else
+                -- Restore original lighting values
+                if next(OriginalLighting) then
+                    Lighting.Brightness = OriginalLighting.Brightness or Lighting.Brightness
+                    Lighting.ClockTime = OriginalLighting.ClockTime or Lighting.ClockTime
+                    Lighting.Ambient = OriginalLighting.Ambient or Lighting.Ambient
+                    Lighting.OutdoorAmbient = OriginalLighting.OutdoorAmbient or Lighting.OutdoorAmbient
+                    Lighting.FogEnd = OriginalLighting.FogEnd or Lighting.FogEnd
+                end
+                FullBrightEnabled = false
+            end
+        end
+    })
+
+
 -- Spinbot RenderStepped: rotate local player's HumanoidRootPart
 Connections.Spinbot = RunService.RenderStepped:Connect(function()
     if not getgenv().Spinbot.Enabled then return end
@@ -812,28 +1069,27 @@ Connections.Spinbot = RunService.RenderStepped:Connect(function()
     end)
 end)
 
+-- FORCE CAMERA FOV to slider value each frame to prevent zoom effects
+Connections.FOVLock = RunService.RenderStepped:Connect(function()
+    -- Only enforce camera FOV when the FOV lock toggle is enabled
+    if not (getgenv().Abyss and getgenv().Abyss.FOVLock) then return end
+    if Camera and Camera.FieldOfView ~= CameraFOVSlider.Value then
+        Camera.FieldOfView = CameraFOVSlider.Value
+    end
+end)
+
+-- Third-person updater (robust)
+
+
 MiscGroup:AddButton({
     Text = "Close Menu",
     Func = function()
         RUNNING = false
 
-        for _, box in pairs(Boxes) do
-            box:Remove()
-        end
-        if FOVCircle then FOVCircle:Remove() end
-        for _, sk in pairs(Skeletons) do
-            for _, l in ipairs(sk.lines) do
-                pcall(function() l:Remove() end)
-            end
-        end
+        -- Disable third-person before disconnecting
+        getgenv().ThirdPersonEnabled = false
 
-        Boxes = {}
-
-        -- stop teleport chase if active
-        if Connections.Chase then
-            stopChase()
-        end
-
+        -- Disconnect all connections safely
         for k, c in pairs(Connections) do
             if typeof(c) == "RBXScriptConnection" then
                 pcall(function() c:Disconnect() end)
@@ -841,49 +1097,137 @@ MiscGroup:AddButton({
             Connections[k] = nil
         end
 
+        -- Disable all ESP
+        getgenv().Abyss.Enabled = false
+
+        -- Remove all ESP drawings
+        for player, drawings in pairs(espCache) do
+            for _, drawing in pairs(drawings) do
+                pcall(function()
+                    drawing.Visible = false
+                    drawing:Remove()
+                end)
+            end
+        end
+        espCache = {}
+
+        -- Remove text ESP drawings as well
+        for player, texts in pairs(textESP) do
+            for _, t in pairs(texts) do
+                pcall(function()
+                    t.Visible = false
+                    t:Remove()
+                end)
+            end
+        end
+        textESP = {}
+
+        -- no skeletons to remove (feature disabled)
+
+        -- Remove FOV circle
+        if FOVCircle then
+            pcall(function() FOVCircle.Visible = false end)
+            pcall(function() FOVCircle:Remove() end)
+        end
+
+        -- Stop chase
+        pcall(stopChase)
+
+        -- Restore default camera
+        if LocalPlayer.Character then
+            local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+            if humanoid then
+                Camera.CameraSubject = humanoid
+                Camera.CameraType = Enum.CameraType.Custom
+            end
+        end
+
+        -- Unload UI
         Library:Unload()
     end
 })
 
--- TOGGLE (REQUIRED FOR COLOR PICKER)
-local ESPToggle = Visuals:AddToggle("BoxESP", {
+-- Box ESP toggle
+local BoxToggle = Visuals:AddToggle("BoxESP", {
     Text = "Box ESP",
     Default = false,
     Callback = function(state)
-        getgenv().FroggoESP.Enabled = state
+        getgenv().Abyss.Enabled = state
     end
 })
 
--- COLOR PICKER (CORRECT USAGE)
-ESPToggle:AddColorPicker("ESPColor", {
-    Title = "ESP Color",
-    Default = getgenv().FroggoESP.Color,
+-- Box ESP color picker
+BoxToggle:AddColorPicker("BoxColor", {
+    Title = "Box Color",
+    Default = getgenv().Abyss.Color,
     Transparency = 0,
     Callback = function(color)
-        getgenv().FroggoESP.Color = color
-    end
-})
-
--- SKELETON ESP TOGGLE + COLOR
-local SkeletonToggle = Visuals:AddToggle("SkeletonESP", {
-    Text = "Skeleton ESP",
-    Default = false,
-    Callback = function(state)
-        getgenv().FroggoESP.Skeleton = state
-    end
-})
-
-SkeletonToggle:AddColorPicker("SkeletonColor", {
-    Title = "Skeleton Color",
-    Default = getgenv().FroggoESP.SkeletonColor,
-    Transparency = 0,
-    Callback = function(color)
-        getgenv().FroggoESP.SkeletonColor = color
+        getgenv().Abyss.Color = color
     end
 })
 
 -- HEAD CIRCLE TOGGLE + COLOR
 -- head-circle UI removed
+
+-- Name ESP toggle
+local NameToggle = Visuals:AddToggle("NameESP", {
+    Text = "Name ESP",
+    Default = getgenv().Abyss.NameESP,
+    Callback = function(state)
+        getgenv().Abyss.NameESP = state
+    end
+})
+
+NameToggle:AddColorPicker("NameColor", {
+    Title = "Name Color",
+    Default = getgenv().Abyss.NameColor,
+    Callback = function(color)
+        getgenv().Abyss.NameColor = color
+    end
+})
+
+-- Health ESP toggle
+local HealthToggle = Visuals:AddToggle("HealthESP", {
+    Text = "Health ESP",
+    Default = getgenv().Abyss.HealthESP,
+    Callback = function(state)
+        getgenv().Abyss.HealthESP = state
+    end
+})
+
+HealthToggle:AddColorPicker("HealthColor", {
+    Title = "Health Color",
+    Default = getgenv().Abyss.HealthColor,
+    Callback = function(color)
+        getgenv().Abyss.HealthColor = color
+    end
+})
+
+-- Distance ESP toggle
+local DistanceToggle = Visuals:AddToggle("DistanceESP", {
+    Text = "Distance ESP",
+    Default = getgenv().Abyss.DistanceESP,
+    Callback = function(state)
+        getgenv().Abyss.DistanceESP = state
+    end
+})
+
+DistanceToggle:AddColorPicker("DistanceColor", {
+    Title = "Distance Color",
+    Default = getgenv().Abyss.DistanceColor,
+    Callback = function(color)
+        getgenv().Abyss.DistanceColor = color
+    end
+})
+
+-- Team check toggle: hide teammates when enabled
+local TeamCheckToggle = Visuals:AddToggle("TeamCheck", {
+    Text = "Team Check",
+    Default = getgenv().Abyss.TeamCheck,
+    Callback = function(state)
+        getgenv().Abyss.TeamCheck = state
+    end
+})
 
 -- Max distance slider
 -- (Max distance slider removed)
@@ -929,12 +1273,34 @@ Connections.Stop = UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.KeyCode == Enum.KeyCode.K then
         RUNNING = false
-        for _, box in pairs(Boxes) do box:Remove() end
-        if FOVCircle then FOVCircle:Remove() end
-        for _, sk in pairs(Skeletons) do
-            for _, l in ipairs(sk.lines) do pcall(function() l:Remove() end) end
+
+        -- Disconnect all connections first
+        for k, c in pairs(Connections) do
+            if typeof(c) == "RBXScriptConnection" then
+                pcall(function() c:Disconnect() end)
+            end
+            Connections[k] = nil
         end
-        -- head-circle visuals removed
-        Boxes = {}
+
+        -- Hide and remove drawings safely
+        if FOVCircle then
+            pcall(function() FOVCircle.Visible = false end)
+            pcall(function() FOVCircle:Remove() end)
+        end
+        for player, drawings in pairs(espCache) do
+            for _, drawing in pairs(drawings) do
+                pcall(function() drawing.Visible = false end)
+                pcall(function() drawing:Remove() end)
+            end
+        end
+        espCache = {}
+        -- remove text ESP drawings too
+        for player, texts in pairs(textESP) do
+            for _, t in pairs(texts) do
+                pcall(function() t.Visible = false end)
+                pcall(function() t:Remove() end)
+            end
+        end
+        textESP = {}
     end
 end)
